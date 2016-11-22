@@ -309,9 +309,11 @@ void network_interface::update_addr(void)
     bool announced = false;
     SPRINT_BUF(b1);
 
+#if 0
     if(this->node) {
         delete this->node;
     }
+#endif
     this->node = new rpl_node(if_addr);
     this->node->debug = debug;
 
