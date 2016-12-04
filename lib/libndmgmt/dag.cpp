@@ -534,6 +534,48 @@ void dag_network::add_all_interfaces(void)
 }
 
 
+static int udp_socket = -1;
+
+void dag_network::mle_compare_parent(rpl_node &peer, network_interface *iface)
+{
+	struct sockaddr_in6 si;
+	struct in6_addr local;
+	char cmd[2048] = {};
+	socklen_t slen;
+	int len;
+
+#if 0
+	if (!dag_bestparent || !dag_bestparentif) {
+		dag_bestparentif = iface;
+		dag_bestparent   = &peer;
+		return;
+	}
+#endif
+
+	if (udp_socket == -1) {
+		udp_socket = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		if (udp_socket == -1)
+			return;
+	}
+
+	if (inet_pton(AF_INET6, "::1", &local) <= 0)
+		return;
+
+	si.sin6_family = AF_INET6;
+	si.sin6_port = htons(1337);
+	si.sin6_addr = local;
+
+	sprintf(cmd, "dump %s", iface->get_if_name());
+	sendto(udp_socket, cmd, strlen(cmd) + 1, 0,
+	       (struct sockaddr *)&si, sizeof(si));
+
+	slen = sizeof(si);
+	len = recvfrom(udp_socket, cmd, sizeof(cmd), 0, (struct sockaddr *)&si, &slen);
+	cmd[len - 1] = '\0';
+
+	debug->info("STRING %s\n", cmd);
+}
+
 void dag_network::potentially_lower_rank(rpl_node &peer,
                                          network_interface *iface,
                                          const struct nd_rpl_dio *dio,
@@ -582,8 +624,14 @@ void dag_network::potentially_lower_rank(rpl_node &peer,
     mVersion      = dio->rpl_version;
     mMode         = RPL_DIO_MOP(dio->rpl_mopprf);
 
-    dag_bestparentif = iface;
-    dag_bestparent   = &peer;
+    mle_compare_parent(peer, iface);
+    debug->info("FOOBAR INFO addr[15] = %d\n", peer.node_address().u.v6.sin6_addr.s6_addr[15]);
+#if 0
+    if (peer.node_address().u.v6.sin6_addr.s6_addr[15] != 2) {
+	    dag_bestparentif = iface;
+	    dag_bestparent   = &peer;
+    }
+#endif
 
     /* now see if we have already an address on this new network */
     /*
@@ -747,12 +795,24 @@ rpl_node *dag_network::update_route(network_interface *iface,
     peer.set_last_seen(now);
 }
 
+void ipv6_to_str_unexpanded(char * str, const struct in6_addr * addr) {
+   sprintf(str, "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                 (int)addr->s6_addr[0], (int)addr->s6_addr[1],
+                 (int)addr->s6_addr[2], (int)addr->s6_addr[3],
+                 (int)addr->s6_addr[4], (int)addr->s6_addr[5],
+                 (int)addr->s6_addr[6], (int)addr->s6_addr[7],
+                 (int)addr->s6_addr[8], (int)addr->s6_addr[9],
+                 (int)addr->s6_addr[10], (int)addr->s6_addr[11],
+                 (int)addr->s6_addr[12], (int)addr->s6_addr[13],
+                 (int)addr->s6_addr[14], (int)addr->s6_addr[15]);
+}
 
 rpl_node *dag_network::update_parent(network_interface *iface,
                                      struct in6_addr from,
                                      struct in6_addr ip6_to,
                                      const time_t now)
 {
+    debug->info("parent from %x to %x\n", from.s6_addr[15], ip6_to.s6_addr[15]);
     /* no difference for parent or child for now */
     return update_node(iface, from, ip6_to, now);
 }
@@ -762,6 +822,7 @@ rpl_node *dag_network::update_child(network_interface *iface,
                                     struct in6_addr ip6_to,
                                     const time_t now)
 {
+//    debug->info("child from %x to %x\n", from.s6_addr[15], ip6_to.s6_addr[15]);
     /* no difference for parent or child for now */
     return update_node(iface, from, ip6_to, now);
 }

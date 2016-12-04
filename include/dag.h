@@ -21,6 +21,7 @@ class rpl_event;
 
 class dag_network {
 public:
+    void mle_compare_parent(rpl_node &peer, network_interface *iface);
     dag_network(instanceID_t instanceID, dagid_t dagid, rpl_debug *debug);
     dag_network(instanceID_t instanceID, struct in6_addr *dagnum, rpl_debug *debug);
     dag_network(instanceID_t instanceID, const char *dagid, rpl_debug *debug);
