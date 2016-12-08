@@ -56,6 +56,7 @@ public:
         };
 
         void add_route_via_node(ip_subnet &prefix, network_interface *iface);
+	bool active;
 
 protected:
 	ip_address nodeip;

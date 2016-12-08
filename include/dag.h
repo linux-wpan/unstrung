@@ -21,6 +21,7 @@ class rpl_event;
 
 class dag_network {
 public:
+    bool mle_compare_parent(rpl_node &peer, network_interface *iface, double *etx);
     dag_network(instanceID_t instanceID, dagid_t dagid, rpl_debug *debug);
     dag_network(instanceID_t instanceID, struct in6_addr *dagnum, rpl_debug *debug);
     dag_network(instanceID_t instanceID, const char *dagid, rpl_debug *debug);
@@ -73,6 +74,7 @@ public:
 
         unsigned int               mMyRank;     /* my rank */
         unsigned int               mBestRank;   /* my best parent */
+	double			   mBestETX;
         bool dag_rank_infinite(void) { return (mBestRank >= RANK_INFINITE); };
 
         /* this manages and evaluates a list of interface wildcards,

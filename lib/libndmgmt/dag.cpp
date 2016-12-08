@@ -69,6 +69,7 @@ void dag_network::init_dag(void)
     mLastSeq = 0;
     mMyRank   = UINT_MAX;
     mBestRank = UINT_MAX;
+    mBestETX = 0;
     mVersion  = 1;
     debug     = NULL;
     memset(mStats,     0, sizeof(mStats));
@@ -407,10 +408,10 @@ bool dag_network::check_security(const struct nd_rpl_dao *dao, int dao_len)
 /* here we mark that a DAO is needed soon */
 void dag_network::maybe_send_dao(void)
 {
-    if(dao_needed && dag_bestparent && !root_node()) {
+    if(dao_needed && dag_bestparent) {
         schedule_dao();
     }
-    dao_needed = false;
+dao_needed = false;
 }
 
 void dag_network::add_childnode(rpl_node          *announcing_peer,
@@ -421,7 +422,7 @@ void dag_network::add_childnode(rpl_node          *announcing_peer,
     char b1[256];
     subnettot(&prefix, 0, b1, 256);
 
-    //if(!pre.is_installed()) {
+//    if(!pre.is_installed()) {
         dao_needed = true;
         pre.set_debug(this->debug);
         pre.set_prefix(prefix);
@@ -430,7 +431,7 @@ void dag_network::add_childnode(rpl_node          *announcing_peer,
         announcing_peer->add_route_via_node(prefix, iface);
         set_dao_needed();
         pre.set_installed(true);
-    //}
+ //   }
 #if 0
     debug->verbose("added child node %s/%s from %s\n",
                    b1, pre.node_name(),
@@ -532,12 +533,120 @@ void dag_network::add_all_interfaces(void)
 }
 
 
+static int udp_socket = -1;
+
+static int mle_find_neighbor(char *cmd, unsigned int *to_find, unsigned int *addr, double *idr, double *midr, unsigned int *flags)
+{
+	char tmp[2048] = {};
+	char *str, *cur;
+	unsigned int id;
+	int ret;
+
+	memcpy(tmp, cmd, 2048);
+	cur = tmp;
+
+	while (strncmp(cur, "\n\r.\n\r", strlen("\n\r.\n\r"))) {
+		str = strchr(cur, '\n');
+		if (!str)
+			break;
+		else
+			*str = '\0';
+
+		ret = sscanf(cur, "id %d addr %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x idr %lf idr mirror %lf flags 0x%02x",
+			     &id, &addr[0], &addr[1], &addr[2], &addr[3], &addr[4], &addr[5], &addr[6], &addr[7],
+			     idr, midr, flags);
+		if (ret == 12) {
+			if (to_find[7] == addr[7])
+				return 0;
+		}
+
+		cur = str + 1;
+	}
+
+	return -1;
+}
+
+bool dag_network::mle_compare_parent(rpl_node &peer, network_interface *iface, double *etx)
+{
+	struct sockaddr_in6 si;
+	struct in6_addr local;
+	char cmd[2048] = {};
+	socklen_t slen;
+	int len, ret;
+	char *str, *cur;
+	unsigned int addr[8], id, flags, tmp_addr[8];
+	double idr, midr;
+	unsigned int best_addr[8], best_flags;
+	double best_idr, best_midr, best_etx;
+
+
+	if (!dag_bestparent)
+		return true;
+#if 0
+	if (peer.node_address().u.v6.sin6_addr.s6_addr[15] != 2) {
+		dag_bestparentif = iface;
+		dag_bestparent   = &peer;
+	}
+#endif
+
+	if (udp_socket == -1) {
+		udp_socket = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		if (udp_socket == -1)
+			return false;
+	}
+
+	if (inet_pton(AF_INET6, "::1", &local) <= 0)
+		return false;
+
+	si.sin6_family = AF_INET6;
+	si.sin6_port = htons(1337);
+	si.sin6_addr = local;
+
+	sprintf(cmd, "dump %s", iface->get_if_name());
+	sendto(udp_socket, cmd, strlen(cmd) + 1, 0,
+	       (struct sockaddr *)&si, sizeof(si));
+
+	slen = sizeof(si);
+	len = recvfrom(udp_socket, cmd, sizeof(cmd), 0, (struct sockaddr *)&si, &slen);
+	cmd[len - 1] = '\0';
+
+	best_addr[7] = dag_bestparent->node_address().u.v6.sin6_addr.s6_addr[15];
+	ret = mle_find_neighbor(cmd, best_addr, addr, &best_idr, &best_midr, &best_flags);
+	if (ret < 0)
+		return false;
+
+	tmp_addr[7] = peer.node_address().u.v6.sin6_addr.s6_addr[15];
+	ret = mle_find_neighbor(cmd, tmp_addr, addr, &idr, &midr, &flags);
+	if (ret < 0)
+		return false;
+
+//	debug->info("FOOBAR %d %d res %d %d %d\n", best_addr[7], tmp_addr[7], best_midr >= midr,
+//		    best_midr, midr);
+//	debug->info("FOOBAR %f %f res %d, %f\n", idr, midr, mBestETX > idr * midr, mBestETX);
+	*etx = (double)(idr * midr);
+	best_etx = best_idr * best_midr;
+
+	debug->info("ETX comp %f > %f\n", best_etx, *etx);
+	if (best_etx > *etx) {
+		dag_bestparent = &peer;
+		dag_bestparentif = iface;
+//		dag_parent = &peer;
+		//commit_parent();
+		debug->info("new bestparent %d\n", dag_bestparent->node_address().u.v6.sin6_addr.s6_addr[15]);
+	}
+//	debug->info("FOOBAR2 %f\n", *etx);
+
+
+	return false;
+}
+
 void dag_network::potentially_lower_rank(rpl_node &peer,
                                          network_interface *iface,
                                          const struct nd_rpl_dio *dio,
                                          int dio_len)
 {
     unsigned int rank = ntohs(dio->rpl_dagrank);
+    double etx;
 
     debug->verbose("  does peer '%s' have better rank? (%u < %u)\n",
                    peer.node_name(), rank, mBestRank);
@@ -546,11 +655,22 @@ void dag_network::potentially_lower_rank(rpl_node &peer,
 
     if(rank > mBestRank) {
         this->mStats[PS_LOWER_RANK_REJECTED]++;
+	debug->info("RANK drop\n");
         return;
     }
 
     debug->verbose("  Yes, '%s' has best rank %u\n",
                    peer.node_name(), rank);
+
+    mle_compare_parent(peer, iface, &etx);
+
+#if 0
+    debug->info("ETX %f < %f\n", mBestETX, etx);
+    if(mBestETX && mBestETX < etx) {
+	debug->info("FOOBAR\n");
+	return;
+    }
+#endif
 
     if(dag_bestparent == &peer || dag_parent == &peer) {
 	debug->verbose("  But it is the same parent as before: ignored\n");
@@ -569,6 +689,7 @@ void dag_network::potentially_lower_rank(rpl_node &peer,
 
     mDTSN     = dio->rpl_dtsn;
     mBestRank     = rank;
+    mBestETX	  = etx;
 
     /* XXX
      * this is actually quite a big deal (SEE rfc6550), setting my RANK.
@@ -663,7 +784,7 @@ void dag_network::send_dao(void)
 void dag_network::maybe_schedule_dio(void)
 {
     /* the list of things that could change needs to be tracked */
-    if(dag_lastparent != dag_parent) {
+    if(dag_bestparent != dag_parent || dag_lastparent != dag_parent) {
         schedule_dio(1);             /* send it almost immediately */
         dag_lastparent = dag_parent;
     }
@@ -1030,7 +1151,6 @@ void dag_network::receive_daoack(network_interface *iface,
         this->mStats[PS_DAOACK_WRONG_PARENT]++;
         return;
     }
-
     /* check DAOSequence number */
     if(daoack->rpl_daoseq != mDAOSequence){
     	debug->warn("received DAOACK with incorrect sequence number, got %u, expected: %u",
