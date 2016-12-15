@@ -535,11 +535,10 @@ void dag_network::add_all_interfaces(void)
 
 static int udp_socket = -1;
 
-static int mle_find_neighbor(char *cmd, unsigned int *to_find, unsigned int *addr, double *idr, double *midr, unsigned int *flags)
+static int mle_find_neighbor(char *cmd, unsigned int *to_find, unsigned int *addr, unsigned int *id, double *idr, double *midr, unsigned int *flags)
 {
 	char tmp[2048] = {};
 	char *str, *cur;
-	unsigned int id;
 	int ret;
 
 	memcpy(tmp, cmd, 2048);
@@ -553,7 +552,7 @@ static int mle_find_neighbor(char *cmd, unsigned int *to_find, unsigned int *add
 			*str = '\0';
 
 		ret = sscanf(cur, "id %d addr %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x idr %lf idr mirror %lf flags 0x%02x",
-			     &id, &addr[0], &addr[1], &addr[2], &addr[3], &addr[4], &addr[5], &addr[6], &addr[7],
+			     id, &addr[0], &addr[1], &addr[2], &addr[3], &addr[4], &addr[5], &addr[6], &addr[7],
 			     idr, midr, flags);
 		if (ret == 12) {
 			if (to_find[7] == addr[7])
@@ -576,12 +575,12 @@ bool dag_network::mle_compare_parent(rpl_node &peer, network_interface *iface, d
 	char *str, *cur;
 	unsigned int addr[8], id, flags, tmp_addr[8];
 	double idr, midr;
-	unsigned int best_addr[8], best_flags;
+	unsigned int best_addr[8], best_flags, best_id;
 	double best_idr, best_midr, best_etx;
 
 
 	if (!dag_bestparent)
-		return true;
+		return false;
 #if 0
 	if (peer.node_address().u.v6.sin6_addr.s6_addr[15] != 2) {
 		dag_bestparentif = iface;
@@ -611,12 +610,12 @@ bool dag_network::mle_compare_parent(rpl_node &peer, network_interface *iface, d
 	cmd[len - 1] = '\0';
 
 	best_addr[7] = dag_bestparent->node_address().u.v6.sin6_addr.s6_addr[15];
-	ret = mle_find_neighbor(cmd, best_addr, addr, &best_idr, &best_midr, &best_flags);
+	ret = mle_find_neighbor(cmd, best_addr, addr, &best_id, &best_idr, &best_midr, &best_flags);
 	if (ret < 0)
 		return false;
 
 	tmp_addr[7] = peer.node_address().u.v6.sin6_addr.s6_addr[15];
-	ret = mle_find_neighbor(cmd, tmp_addr, addr, &idr, &midr, &flags);
+	ret = mle_find_neighbor(cmd, tmp_addr, addr, &id, &idr, &midr, &flags);
 	if (ret < 0)
 		return false;
 
@@ -633,11 +632,12 @@ bool dag_network::mle_compare_parent(rpl_node &peer, network_interface *iface, d
 //		dag_parent = &peer;
 		//commit_parent();
 		debug->info("new bestparent %d\n", dag_bestparent->node_address().u.v6.sin6_addr.s6_addr[15]);
+		return false;
 	}
 //	debug->info("FOOBAR2 %f\n", *etx);
 
 
-	return false;
+	return true;
 }
 
 void dag_network::potentially_lower_rank(rpl_node &peer,
@@ -662,7 +662,9 @@ void dag_network::potentially_lower_rank(rpl_node &peer,
     debug->verbose("  Yes, '%s' has best rank %u\n",
                    peer.node_name(), rank);
 
-    mle_compare_parent(peer, iface, &etx);
+    if(mle_compare_parent(peer, iface, &etx)) {
+	return;
+    }
 
 #if 0
     debug->info("ETX %f < %f\n", mBestETX, etx);
@@ -784,9 +786,9 @@ void dag_network::send_dao(void)
 void dag_network::maybe_schedule_dio(void)
 {
     /* the list of things that could change needs to be tracked */
-    if(dag_bestparent != dag_parent || dag_lastparent != dag_parent) {
-        schedule_dio(1);             /* send it almost immediately */
+    if(dag_lastparent != dag_parent) {
         dag_lastparent = dag_parent;
+        schedule_dio(1);             /* send it almost immediately */
     }
 }
 
@@ -963,9 +965,9 @@ void dag_network::receive_dio(network_interface *iface,
                               const time_t    now,
                               const struct nd_rpl_dio *dio, int dio_len)
 {
+    ip_subnet prefix;
     /* it has already been checked to be at least sizeof(*dio) */
     int dio_payload_len = dio_len - sizeof(*dio);
-
     /* increment stat of number of packets processed */
     this->mStats[PS_PACKET_RECEIVED]++;
     this->mStats[PS_DIO_PACKET_RECEIVED]++;
